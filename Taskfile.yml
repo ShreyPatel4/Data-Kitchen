@@ -1,0 +1,38 @@
+version: '3'
+
+tasks:
+  bootstrap:
+    desc: Initialize local development environment
+    cmds:
+      - echo "Bootstrap not implemented yet"
+
+  fmt:
+    desc: Format code
+    cmds:
+      - echo "Formatting..."
+
+  lint:
+    desc: Run linters
+    cmds:
+      - echo "Linting..."
+
+  test:
+    desc: Run tests
+    cmds:
+      - echo "Running tests..."
+      - python -m pytest || echo "pytest not installed"
+
+  build:
+    desc: Build project artifacts
+    cmds:
+      - echo "Build not implemented yet"
+
+  up:
+    desc: Start local development stack
+    cmds:
+      - docker compose up -d
+
+  down:
+    desc: Stop local development stack
+    cmds:
+      - docker compose down

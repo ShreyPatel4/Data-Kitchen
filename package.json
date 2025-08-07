@@ -1,0 +1,11 @@
+{
+  "name": "nova",
+  "version": "0.1.0",
+  "description": "AI-driven data platform MVP",
+  "private": true,
+  "scripts": {
+    "lint": "echo \"No linting configured\"",
+    "test": "echo \"No tests yet\" && exit 0",
+    "build": "echo \"No build step\""
+  }
+}
