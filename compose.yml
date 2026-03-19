@@ -1,6 +1,22 @@
-version: '3.9'
-
 services:
+  # ─── Infrastructure Services ───────────────────────────────────────────
+
+  postgres:
+    image: postgres:15
+    environment:
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_USER: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./deploy/scripts/init-postgres.sh:/docker-entrypoint-initdb.d/init.sh
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
   minio:
     image: minio/minio:latest
     command: server /data --console-address ":9001"
@@ -12,28 +28,27 @@ services:
       MINIO_ROOT_PASSWORD: minioadmin
     volumes:
       - minio-data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
 
-  localstack:
-    image: localstack/localstack:latest
-    ports:
-      - "4566:4566"
-    environment:
-      - SERVICES=s3,secretsmanager,kms,route53,acm,iam,sts
-      - DEFAULT_REGION=us-east-1
-
-  temporal:
-    image: temporalio/auto-setup:1.21
-    ports:
-      - "7233:7233"
-
-  postgres:
-    image: postgres:15
-    environment:
-      POSTGRES_PASSWORD: postgres
-    ports:
-      - "5432:5432"
-    volumes:
-      - postgres-data:/var/lib/postgresql/data
+  minio-init:
+    image: minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: /bin/sh
+    command:
+      - -c
+      - |
+        mc alias set nova http://minio:9000 minioadmin minioadmin
+        mc mb --ignore-existing nova/raw
+        mc mb --ignore-existing nova/staging
+        mc mb --ignore-existing nova/curated
+        mc mb --ignore-existing nova/warehouse
+        echo "MinIO buckets initialized"
 
   kafka:
     image: bitnami/kafka:3.5
@@ -46,20 +61,17 @@ services:
       - KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP=CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
       - KAFKA_CFG_CONTROLLER_QUORUM_VOTERS=0@kafka:9093
       - KAFKA_CFG_ADVERTISED_LISTENERS=PLAINTEXT://kafka:9092
+      - ALLOW_PLAINTEXT_LISTENER=yes
     ports:
       - "9092:9092"
     volumes:
       - kafka-data:/bitnami/kafka
-
-  trino:
-    image: trinodb/trino:latest
-    ports:
-      - "8080:8080"
-
-  flink:
-    image: flink:1.17
-    ports:
-      - "8081:8081"
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-broker-api-versions.sh --bootstrap-server localhost:9092"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
 
   neo4j:
     image: neo4j:5
@@ -70,6 +82,81 @@ services:
       - "7687:7687"
     volumes:
       - neo4j-data:/data
+    healthcheck:
+      test: ["CMD", "neo4j", "status"]
+      interval: 10s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  temporal:
+    image: temporalio/auto-setup:1.21
+    ports:
+      - "7233:7233"
+    environment:
+      - DB=postgres12
+      - DB_PORT=5432
+      - POSTGRES_USER=postgres
+      - POSTGRES_PWD=postgres
+      - POSTGRES_SEEDS=postgres
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "tctl", "--address", "temporal:7233", "cluster", "health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  temporal-ui:
+    image: temporalio/ui:2.21.3
+    ports:
+      - "8088:8080"
+    environment:
+      - TEMPORAL_ADDRESS=temporal:7233
+    depends_on:
+      temporal:
+        condition: service_healthy
+
+  trino:
+    image: trinodb/trino:latest
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD", "trino", "--execute", "SELECT 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+
+  flink-jobmanager:
+    image: flink:1.17
+    command: jobmanager
+    ports:
+      - "8081:8081"
+    environment:
+      - |
+        FLINK_PROPERTIES=
+        jobmanager.rpc.address: flink-jobmanager
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8081/overview || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  flink-taskmanager:
+    image: flink:1.17
+    command: taskmanager
+    environment:
+      - |
+        FLINK_PROPERTIES=
+        jobmanager.rpc.address: flink-jobmanager
+        taskmanager.numberOfTaskSlots: 2
+    depends_on:
+      flink-jobmanager:
+        condition: service_healthy
 
   keycloak:
     image: quay.io/keycloak/keycloak:23.0
@@ -79,6 +166,38 @@ services:
       - KEYCLOAK_ADMIN_PASSWORD=admin
     ports:
       - "8085:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/localhost/8080 && echo -e 'GET /health/ready HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3 && cat <&3 | grep -q '200\\|UP'"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+      start_period: 60s
+
+  # ─── Application Services ──────────────────────────────────────────────
+
+  nova-api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      - NOVA_DATABASE_URL=postgresql+asyncpg://postgres:postgres@postgres:5432/nova_metadata
+      - NOVA_NEO4J_URI=bolt://neo4j:7687
+      - NOVA_NEO4J_USER=neo4j
+      - NOVA_NEO4J_PASSWORD=neo4jpassword
+      - NOVA_KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - NOVA_MINIO_ENDPOINT=minio:9000
+      - NOVA_TEMPORAL_ADDRESS=temporal:7233
+      - NOVA_CORS_ORIGINS=["http://localhost:3000"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8000/health || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
 
 volumes:
   minio-data:

@@ -1,38 +1,109 @@
 version: '3'
 
+vars:
+  PYTHON: .venv/bin/python
+  PIP: .venv/bin/pip
+  PYTHONPATH: "{{.ROOT_DIR}}/apps/api/src:{{.ROOT_DIR}}"
+
 tasks:
   bootstrap:
     desc: Initialize local development environment
     cmds:
-      - echo "Bootstrap not implemented yet"
-
-  fmt:
-    desc: Format code
-    cmds:
-      - echo "Formatting..."
-
-  lint:
-    desc: Run linters
-    cmds:
-      - echo "Linting..."
-
-  test:
-    desc: Run tests
-    cmds:
-      - echo "Running tests..."
-      - python -m pytest || echo "pytest not installed"
-
-  build:
-    desc: Build project artifacts
-    cmds:
-      - echo "Build not implemented yet"
+      - python3 -m venv .venv || true
+      - "{{.PIP}} install -e '.[dev]'"
+      - echo "Python environment ready"
+      - echo "---"
+      - echo "To install frontend deps, run 'cd ui/web && npm install'"
 
   up:
-    desc: Start local development stack
+    desc: Start local development stack (infra + API)
     cmds:
-      - docker compose up -d
+      - docker compose up -d --build
+      - echo "---"
+      - echo "Services starting up..."
+      - echo "  Nova API      → http://localhost:8000"
+      - echo "  API Docs      → http://localhost:8000/docs"
+      - echo "  MinIO Console → http://localhost:9001"
+      - echo "  Trino         → http://localhost:8080"
+      - echo "  Flink         → http://localhost:8081"
+      - echo "  Temporal UI   → http://localhost:8088"
+      - echo "  Neo4j Browser → http://localhost:7474"
+      - echo "  Keycloak      → http://localhost:8085"
+
+  up:infra:
+    desc: Start only infrastructure services (no app)
+    cmds:
+      - docker compose up -d postgres minio minio-init kafka neo4j temporal temporal-ui trino flink-jobmanager flink-taskmanager keycloak
 
   down:
     desc: Stop local development stack
     cmds:
       - docker compose down
+
+  down:clean:
+    desc: Stop stack and remove volumes
+    cmds:
+      - docker compose down -v
+
+  dev:
+    desc: Run API in dev mode (hot-reload)
+    env:
+      PYTHONPATH: "{{.PYTHONPATH}}"
+    cmds:
+      - "{{.PYTHON}} -m uvicorn nova_api.app:app --reload --port 8000"
+
+  fmt:
+    desc: Format code
+    cmds:
+      - .venv/bin/ruff format apps/ engines/ tests/
+
+  lint:
+    desc: Run linters
+    cmds:
+      - .venv/bin/ruff check apps/ engines/ tests/
+
+  lint:fix:
+    desc: Run linters with auto-fix
+    cmds:
+      - .venv/bin/ruff check --fix apps/ engines/ tests/
+
+  test:
+    desc: Run tests
+    env:
+      PYTHONPATH: "{{.PYTHONPATH}}"
+    cmds:
+      - "{{.PYTHON}} -m pytest"
+
+  test:v:
+    desc: Run tests (verbose)
+    env:
+      PYTHONPATH: "{{.PYTHONPATH}}"
+    cmds:
+      - "{{.PYTHON}} -m pytest -v"
+
+  migrate:
+    desc: Run Alembic migrations
+    dir: apps/api
+    env:
+      PYTHONPATH: "{{.PYTHONPATH}}"
+    cmds:
+      - "{{.ROOT_DIR}}/{{.PYTHON}} -m alembic upgrade head"
+
+  migrate:new:
+    desc: Create a new migration
+    dir: apps/api
+    env:
+      PYTHONPATH: "{{.PYTHONPATH}}"
+    cmds:
+      - "{{.ROOT_DIR}}/{{.PYTHON}} -m alembic revision --autogenerate -m '{{.CLI_ARGS}}'"
+
+  health:
+    desc: Check health of all services
+    cmds:
+      - |
+        echo "Checking service health..."
+        if curl -sf "http://localhost:8000/health" > /dev/null 2>&1; then
+          echo "  ✓ Nova API (port 8000)"
+        else
+          echo "  ✗ Nova API (port 8000)"
+        fi
