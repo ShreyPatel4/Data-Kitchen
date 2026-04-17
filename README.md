@@ -1,5 +1,7 @@
 # Nova
 
+> **Archived 2026-04-16 — no longer under active development.** See [`HANDOFF.md`](./HANDOFF.md) for reusable modules, how to run, and notes for anyone considering a resume. The PRD below is preserved as-is for historical context; do not treat it as the current direction.
+
 Minimal scaffold for the AI-driven data platform MVP.
 
 ## Quickstart

@@ -31,3 +31,6 @@ Thumbs.db
 
 # Docker
 docker-compose.override.yml
+
+# Local agent memory (not for version control)
+.claude/
